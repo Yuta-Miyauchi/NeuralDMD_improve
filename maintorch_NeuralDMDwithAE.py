@@ -1,6 +1,6 @@
 ####################################################################################################
 ## Neural Dynamic Mode Decomposition (Neural DMD) for long-term prediction
-# The Same Algorithm as (Iwata et al. 2020)
+# Improvement by AutoEncoder Learning with LeakyReLU
 ####################################################################################################
 
 import numpy as np
@@ -57,44 +57,49 @@ class NeuralDMD(torch.nn.Module):
 
         self.encoder = torch.nn.Sequential(
             torch.nn.Linear(self.original_dim, self.latent_dim),
-            torch.nn.ReLU(0.01),
+            torch.nn.LeakyReLU(0.01),
             # torch.nn.Dropout(0.1),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.ReLU(0.01),
+            torch.nn.LeakyReLU(0.01),
             # torch.nn.Dropout(0.1),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.ReLU(0.01),
+            torch.nn.LeakyReLU(0.01),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim)
         )
 
         self.decoder = torch.nn.Sequential(
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.ReLU(0.01),
+            torch.nn.LeakyReLU(0.01),
             # torch.nn.Dropout(0.1),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.ReLU(0.01),
+            torch.nn.LeakyReLU(0.01),
             # torch.nn.Dropout(0.1),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.ReLU(0.01),
+            torch.nn.LeakyReLU(0.01),
 
             torch.nn.Linear(self.latent_dim, self.original_dim)
         )
 
     def forward(self, X):
-        idx, X = X 
+        idx, X, switch = X
 
-        Z = self.encoder(X)
-        
-        Z_transpose = Z.T 
-        Z_pred_transpose = DMD_LongTermPrediction(idx, Z_transpose)
-        Z_pred = Z_pred_transpose.T 
+        if switch == 'AutoEncoder':
+            Z = self.encoder(X)
+            X_pred = self.decoder(Z)
 
-        X_pred = self.decoder(Z_pred)
+        elif switch == 'NeuralDMD': 
+            Z = self.encoder(X)
+            
+            Z_transpose = Z.T 
+            Z_pred_transpose = DMD_LongTermPrediction(idx, Z_transpose)
+            Z_pred = Z_pred_transpose.T 
+            
+            X_pred = self.decoder(Z_pred)
 
         return X_pred
 
@@ -176,20 +181,32 @@ def training(model, data, epochs = 1000):
     for epoch in range(epochs):
         optimizer = torch.optim.Adam(model.parameters(), lr = 1e-3)
         model.train()
-        idx, X = create_train(data)
-        idx = torch.tensor(idx, dtype = torch.int64)
-        X = torch.tensor(X, dtype = torch.float)
-        X_pred  = model([idx, X])
-        train_loss = mse_for_train(X_pred, X)
-        optimizer.zero_grad()
-        train_loss.backward()
-        optimizer.step()
+
+        for i in range(5):
+            idx, X = create_train(data)
+            idx = torch.tensor(idx, dtype = torch.int64)
+            X = torch.tensor(X, dtype = torch.float)
+            X_pred  = model([idx, X, 'AutoEncoder'])
+            train_loss = mse_for_train(X_pred, X)
+            optimizer.zero_grad()
+            train_loss.backward()
+            optimizer.step()
+
+        for i in range(5):
+            idx, X = create_train(data)
+            idx = torch.tensor(idx, dtype = torch.int64)
+            X = torch.tensor(X, dtype = torch.float)
+            X_pred  = model([idx, X, 'NeuralDMD'])
+            train_loss = mse_for_train(X_pred, X)
+            optimizer.zero_grad()
+            train_loss.backward()
+            optimizer.step()
 
         model.eval()
         idx, X = create_validate(data)
         idx = torch.tensor(idx, dtype = torch.int64)
         X = torch.tensor(X, dtype = torch.float)
-        X_pred = model([idx, X])
+        X_pred = model([idx, X, 'NeuralDMD'])
         valid_loss = mse(X_pred, X)
         if valid_loss < best_loss:
             best_loss = valid_loss
@@ -213,7 +230,7 @@ def test(model, best_state, data):
     model.load_state_dict(best_state)
     idx = torch.tensor(idx, dtype = torch.int64)
     X = torch.tensor(X, dtype = torch.float)
-    X_pred_ndmd = model([idx, X])
+    X_pred_ndmd = model([idx, X, 'NeuralDMD'])
     test_loss_ndmd = mse(X_pred_ndmd, X)
 
     X_pred_exact = DMD_LongTermPrediction(idx, X.T).T
@@ -228,7 +245,7 @@ def test(model, best_state, data):
 ##################################################
 
 def main():
-    data_sampled = load_sampled_vortacity(sampling_ratio = 0.0001)
+    data_sampled = load_sampled_vortacity(sampling_ratio = 0.001)
 
     print('train')
     model = NeuralDMD(original_dim = data_sampled.shape[0], latent_dim = 256)
