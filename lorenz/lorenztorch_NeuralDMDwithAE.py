@@ -1,6 +1,5 @@
 ####################################################################################################
-## Neural Dynamic Mode Decomposition (Neural DMD) for long-term prediction
-# Improvement by AutoEncoder Learning with LeakyReLU
+## Lorenz Prediction by Neural DMD with AutoEncoder
 ####################################################################################################
 
 import numpy as np
@@ -12,7 +11,7 @@ import torch
 ## Neural DMD Architecture
 ##################################################
 
-def low_rank_approximation(s, low_rank = 0.999):
+def low_rank_approximation(s, low_rank = 0.9):
     ratio_s = s/s.sum()
     cumulative_s = torch.cumsum(ratio_s, dim = 0)
     idx = torch.nonzero(cumulative_s >= low_rank, as_tuple = False)
@@ -58,11 +57,11 @@ class NeuralDMD(torch.nn.Module):
         self.encoder = torch.nn.Sequential(
             torch.nn.Linear(self.original_dim, self.latent_dim),
             torch.nn.LeakyReLU(0.01),
-            # torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim),
             torch.nn.LeakyReLU(0.01),
-            # torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim),
             torch.nn.LeakyReLU(0.01),
@@ -73,11 +72,11 @@ class NeuralDMD(torch.nn.Module):
         self.decoder = torch.nn.Sequential(
             torch.nn.Linear(self.latent_dim, self.latent_dim),
             torch.nn.LeakyReLU(0.01),
-            # torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim),
             torch.nn.LeakyReLU(0.01),
-            # torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim),
             torch.nn.LeakyReLU(0.01),
@@ -107,15 +106,36 @@ class NeuralDMD(torch.nn.Module):
 ## Data Preprocessing
 ##################################################
 
-def load_sampled_vortacity(file_name = '../DATA/FLUIDS/CYLINDER_ALL.mat', sampling_ratio = 0.001):
-    all_data = sp.io.loadmat(file_name)
-    data = all_data['VORTALL']
+def lorenz(x, y, z, sigma = 10.0, rho = 28.0, beta = 8/3):
+    dx = sigma*(y - x)
+    dy = x*(rho - z) - y
+    dz = x*y - beta*z
+    return dx, dy, dz
 
-    idx = np.arange(0, data.shape[0])
-    sampled = np.random.choice(idx, size = int(sampling_ratio*idx.shape[0]), replace = False)
-    data_sampled = data[sampled, :]
+def simulate_lorenz(x0 = 1.0, y0 = 1.0, z0 = 1.0, dt = 0.01, steps = 4000):
+    data = np.zeros((3, steps + 1))
 
-    return data_sampled
+    data[0, 0], data[1, 0], data[2, 0] = x0, y0, z0
+    for i in range(steps):
+        dx, dy, dz = lorenz(data[0, i], data[1, i], data[2, i])
+        data[0, i + 1] = data[0, i] + dx*dt
+        data[1, i + 1] = data[1, i] + dy*dt
+        data[2, i + 1] = data[2, i] + dz*dt
+
+    fig = plt.figure(figsize = (8, 6))
+    ax = fig.add_subplot(111, projection = "3d")
+    ax.plot(data[0], data[1], data[2], linewidth = 0.5)
+
+    ax.set_title("Lorenz Attractor")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+
+    plt.tight_layout()
+    plt.savefig('lorenz.pdf', format = 'pdf')
+    plt.close()
+
+    return data
 
 def create_train(data):
     T = data.shape[1]
@@ -157,7 +177,7 @@ def create_test(data):
     X2 = data[:, idx2]
     X = np.transpose(np.concatenate([X1, X2], axis = 1))
 
-    return [idx_all, X]
+    return idx_all, X
 
 ##################################################
 ## For Training
@@ -175,7 +195,7 @@ def mse(y_pred, y_true):
 
     return mse
 
-def training(model, data, epochs = 1000):
+def training(model, data, epochs = 400):
     best_loss = float('inf')
     best_state = {}
     for epoch in range(epochs):
@@ -212,7 +232,7 @@ def training(model, data, epochs = 1000):
             best_loss = valid_loss
             best_state = model.state_dict()
 
-        if epoch == 0 or (epoch + 1)%100 == 0:
+        if epoch == 0 or (epoch + 1)%10 == 0:
             print(f'epoch {epoch + 1: 4} / train loss: {train_loss:.6f} / valid loss: {valid_loss:.6f}')
 
     print(f'Best loss: {best_loss}')
@@ -230,13 +250,37 @@ def test(model, best_state, data):
     model.load_state_dict(best_state)
     idx = torch.tensor(idx, dtype = torch.int64)
     X = torch.tensor(X, dtype = torch.float)
-    X_pred_ndmd = model([idx, X, 'NeuralDMD'])
-    test_loss_ndmd = mse(X_pred_ndmd, X)
+    with torch.no_grad():
+        X_pred_ndmd = model([idx, X, 'NeuralDMD'])
+        test_loss_ndmd = mse(X_pred_ndmd, X)
 
     X_pred_exact = DMD_LongTermPrediction(idx, X.T).T
     test_loss_exact = mse(X_pred_exact, X)
 
     print(f'test loss: Neural DMD - {test_loss_ndmd:.6f}, Exact DMD - {test_loss_exact:.6f}')
+
+    X_pred_ndmd = X_pred_ndmd.numpy()
+    X_pred_exact = X_pred_exact.numpy()
+
+    X = X.T
+    X_pred_ndmd = X_pred_ndmd.T 
+    X_pred_exact = X_pred_exact.T
+
+    fig = plt.figure(figsize = (8, 6))
+    ax = fig.add_subplot(111, projection = "3d")
+    ax.plot(X[0, (X.shape[1]//2):], X[1, (X.shape[1]//2):], X[2, (X.shape[1]//2):], linewidth = 0.5, label = "true")
+    ax.plot(X_pred_ndmd[0, (X_pred_ndmd.shape[1]//2):], X_pred_ndmd[1, (X_pred_ndmd.shape[1]//2):], X_pred_ndmd[2, (X_pred_ndmd.shape[1]//2):], linewidth = 0.5, label = "Neural DMD")
+    ax.plot(X_pred_exact[0, (X_pred_exact.shape[1]//2):], X_pred_exact[1, (X_pred_exact.shape[1]//2):], X_pred_exact[2, (X_pred_exact.shape[1]//2):], linewidth = 0.5, label = "Exact DMD")
+
+    ax.set_title("Lorenz Attractor Prediction Result")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig('lorenz-NDMDwithAE.pdf', format = 'pdf')
+    plt.close()
 
     return test_loss_ndmd, test_loss_exact
 
@@ -245,14 +289,14 @@ def test(model, best_state, data):
 ##################################################
 
 def main():
-    data_sampled = load_sampled_vortacity(sampling_ratio = 0.001)
+    data = simulate_lorenz()
 
     print('train')
-    model = NeuralDMD(original_dim = data_sampled.shape[0], latent_dim = 256)
-    best_state = training(model, data_sampled)
+    model = NeuralDMD(original_dim = data.shape[0], latent_dim = 10)
+    best_state = training(model, data)
 
     print('test')
-    test_loss_ndmd, test_loss_exact = test(model, best_state, data_sampled)
+    test_loss_ndmd, test_loss_exact = test(model, best_state, data)
 
 if __name__ == "__main__":
     main()
