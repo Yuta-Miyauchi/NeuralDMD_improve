@@ -1,6 +1,5 @@
 ####################################################################################################
-## Neural Dynamic Mode Decomposition (Neural DMD)
-# The Same Algorithm as (Iwata et al. 2020)
+## Neural Dynamic Mode Decomposition (Neural DMD) with Deep Feature Style Based Algorithm
 ####################################################################################################
 
 import numpy as np
@@ -41,135 +40,93 @@ class ExactDMD():
 
         return X_pred 
 
-##################################################
-## Neural DMD Architecture
-##################################################
+####################################################################################################
+## Neural DMD Architecture with Deep Feature Style Based Algorithm
+####################################################################################################
 
-class NeuralDMD(torch.nn.Module):
-    def __init__(self, original_dim, latent_dim):
-        super(NeuralDMD, self).__init__()
+class NeuralDMD_Stage1(torch.nn.Module):
+    def __init__(self, original_dim, latent_dim, ncoef):
+        super(NeuralDMD_Stage1, self).__init__()
 
         self.original_dim = original_dim
         self.latent_dim = latent_dim
+        self.ncoef = ncoef
 
         self.encoder = torch.nn.Sequential(
             torch.nn.Linear(self.original_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.ReLU(0.01),
 
-            #torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.ReLU(0.01),
 
-            #torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.ReLU(0.01),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim)
-        )
-
-        self.decoder = torch.nn.Sequential(
-            torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
-
-            #torch.nn.Dropout(0.1),
-            torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
-
-            #torch.nn.Dropout(0.1),
-            torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
-
-            torch.nn.Linear(self.latent_dim, self.original_dim)
         )
 
     def forward(self, data):
         idx, X = data
 
         Z = self.encoder(X)
-            
-        Z_transpose = Z.T 
-        Z_pred_transpose, Atilde, U = self._dmd(idx, Z_transpose)
-        Z_pred = Z_pred_transpose.T 
-            
-        X_pred = self.decoder(Z_pred)
 
-        return X_pred, Atilde, U
-
-    def _low_rank_approximation(self, s, low_rank = 0.999):
-        ratio_s = s/s.sum()
-        cumulative_s = torch.cumsum(ratio_s, dim = 0)
-        idx = torch.nonzero(cumulative_s >= low_rank, as_tuple = False)
-        if len(idx) == 0:
-            return len(s)
-        else:
-            return idx[0].item() + 1
-
-    def _dmd(self, idx, X):
-        X1 = X[:, :(X.shape[1]//2)]
-        X2 = X[:, (X.shape[1]//2):]
-
-        U, s, Vh = torch.linalg.svd(X1, full_matrices = False)
-        V = Vh.T 
-
-        r = self._low_rank_approximation(s)
-        U = U[:, :r]
-        s = s[:r]
-        V = V[:, :r]
-
-        s_inv = 1/s
-        S_inv = torch.diag(s_inv)
-
-        Atilde = U.T@X2@V@S_inv
+        Z = Z.T
+        Z1 = Z[:, :(Z.shape[1]//2)]
+        Z2 = Z[:, (Z.shape[1]//2):]
+        K = Z2@Z1.T@torch.linalg.inv(Z1@Z1.T + Z1.shape[0]*self.ncoef*torch.eye(Z1.shape[0]))
 
         idx0 = idx[0]
-        z0 = U.T@X1[:, 0].view([-1, 1])
-        Z_pred = z0
+        z0 = Z1[:, 0].view([-1, 1])
+        Z_pred = z0 
+        for t in range(1, idx.shape[0]):
+            Z_pred = torch.cat([Z_pred, torch.matrix_power(K, int(idx[t] - idx0))@z0], dim = 1)
 
-        for i in range(1, idx.shape[0]):
-            Z_pred = torch.cat([Z_pred, torch.matrix_power(Atilde, int(idx[i] - idx0))@z0], dim = 1)
-        X_pred = U@Z_pred
+        norm_err = torch.norm(Z_pred - Z, dim = 0)
+        mse = norm_err.mean()
 
-        return X_pred, Atilde, U
+        return mse, K 
 
-class NeuralDMD_Evaluation(torch.nn.Module):
+class NeuralDMD_Stage2(torch.nn.Module):
     def __init__(self, original_dim, latent_dim):
-        super(NeuralDMD_Evaluation, self).__init__()
+        super(NeuralDMD_Stage2, self).__init__()
 
         self.original_dim = original_dim
         self.latent_dim = latent_dim
 
         self.encoder = torch.nn.Sequential(
             torch.nn.Linear(self.original_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.ReLU(0.01),
 
-            #torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.ReLU(0.01),
 
-            #torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.ReLU(0.01),
 
             torch.nn.Linear(self.latent_dim, self.latent_dim)
         )
 
         self.decoder = torch.nn.Sequential(
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.ReLU(0.01),
 
-            #torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.ReLU(0.01),
 
-            #torch.nn.Dropout(0.1),
+            torch.nn.Dropout(0.1),
             torch.nn.Linear(self.latent_dim, self.latent_dim),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.ReLU(0.01),
 
             torch.nn.Linear(self.latent_dim, self.original_dim)
         )
 
     def forward(self, data):
-        x0, idx, Atilde, U = data
+        x0, idx, K = data
 
         z0 = self.encoder(x0)
 
@@ -177,7 +134,7 @@ class NeuralDMD_Evaluation(torch.nn.Module):
         z0 = z0.T 
         Z_pred = z0 
         for t in range(1, idx.shape[0]):
-            Z_pred = torch.cat([Z_pred, U@torch.matrix_power(Atilde, int(idx[t] - idx0))@U.T@z0], dim = 1)
+            Z_pred = torch.cat([Z_pred, torch.matrix_power(K, int(idx[t] - idx0))@z0], dim = 1)
         Z_pred = Z_pred.T 
 
         X_pred = self.decoder(Z_pred)
@@ -249,52 +206,69 @@ def mse(y_pred, y_true):
 
     return mse
 
-def training(models, data, learning_rate = 1e-3, epochs = 1000):
-    model_ndmd, model_eval = models
+def training(models, data, learning_rate = 1e-3, epochs = 1000, cnt_stage1 = 5, cnt_stage2 = 5):
+    model_stage1, model_stage2 = models
 
     best_loss = float('inf')
     best_state = {}
 
-    optimizer = torch.optim.Adam(model_ndmd.parameters(), lr = learning_rate)
-    model_ndmd.train()
     for epoch in range(epochs):
-        idx, X = create_train(data)
-        idx = torch.tensor(idx, dtype = torch.int64)
-        X = torch.tensor(X, dtype = torch.float)
+        optimizer = torch.optim.Adam(model_stage1.parameters(), lr = learning_rate)
+        model_stage1.train()
+        for cnt in range(cnt_stage1):
+            idx, X = create_train(data)
+            idx = torch.tensor(idx, dtype = torch.int64)
+            X = torch.tensor(X, dtype = torch.float)
 
-        X_pred, K_ndmd, U_ndmd  = model_ndmd([idx, X])
-        train_loss = mse(X_pred, X)
-        optimizer.zero_grad()
-        train_loss.backward()
-        optimizer.step()
+            train_loss, K_ndmd = model_stage1([idx, X])
+            optimizer.zero_grad()
+            train_loss.backward()
+            optimizer.step()
+
+        K_ndmd = K_ndmd.detach()
+        model_stage1.eval()
+        model_stage2.encoder.load_state_dict(model_stage1.encoder.state_dict())
+        for p in model_stage2.encoder.parameters():
+            p.requires_grad = False
+        optimizer = torch.optim.Adam(model_stage2.decoder.parameters(), lr = learning_rate)
+        model_stage2.train()
+        model_stage2.encoder.eval()
+        for cnt in range(cnt_stage2):
+            idx, X = create_train(data)
+            idx = torch.tensor(idx, dtype = torch.int64)
+            X = torch.tensor(X, dtype = torch.float)
+
+            X_pred  = model_stage2([X[0, :].view([1, -1]), idx, K_ndmd])
+            train_loss = mse(X_pred, X)
+            optimizer.zero_grad()
+            train_loss.backward()
+            optimizer.step()
 
         idx, X = create_validate(data)
         idx = torch.tensor(idx, dtype = torch.int64)
         X = torch.tensor(X, dtype = torch.float)
 
-        model_ndmd.eval()
-        model_eval.load_state_dict(model_ndmd.state_dict())
-        model_eval.eval()
-        X_pred  = model_eval([X[0, :].view([1, -1]), idx, K_ndmd, U_ndmd])
+        model_stage2.eval()
+        X_pred  = model_stage2([X[0, :].view([1, -1]), idx, K_ndmd])
         valid_loss = mse(X_pred, X)
 
         if valid_loss < best_loss:
             best_loss = valid_loss
-            best_state = model_eval.state_dict()
+            best_state = model_stage2.state_dict()
 
         if epoch == 0 or (epoch + 1)%100 == 0:
             print(f'epoch {epoch + 1: 4} / train loss: {train_loss:.6f} / valid loss: {valid_loss:.6f}')
 
     print(f'Best loss: {best_loss}')
     
-    return best_state, K_ndmd, U_ndmd
+    return best_state, K_ndmd
 
 ####################################################################################################
 ## Evaluation
 ####################################################################################################
 
-def test(models, K, U_ndmd, best_state, data):
-    model_dmd, model_eval = models
+def test(models, K, best_state, data):
+    model_dmd, model_stage2 = models
     K_dmd, K_ndmd = K
 
     idx, X = create_test(data)
@@ -304,9 +278,9 @@ def test(models, K, U_ndmd, best_state, data):
     X_pred_dmd = model_dmd.predict([X[0, :].view([1, -1]), idx, K_dmd])
     test_loss_dmd = mse(X_pred_dmd, X)
 
-    model_eval.eval()
-    model_eval.load_state_dict(best_state)
-    X_pred_ndmd  = model_eval([X[0, :].view([1, -1]), idx, K_ndmd, U_ndmd])
+    model_stage2.eval()
+    model_stage2.load_state_dict(best_state)
+    X_pred_ndmd  = model_stage2([X[0, :].view([1, -1]), idx, K_ndmd])
     test_loss_ndmd = mse(X_pred_ndmd, X)
 
     print(f'test loss: Neural DMD - {test_loss_ndmd:.6f}, Exact DMD - {test_loss_dmd:.6f}')
@@ -321,8 +295,8 @@ def main():
     data_sampled = load_sampled_vortacity(sampling_ratio = 0.0001)
 
     model_dmd = ExactDMD(ncoef = 0.001)
-    model_ndmd = NeuralDMD(original_dim = data_sampled.shape[0], latent_dim = 256)
-    model_eval = NeuralDMD_Evaluation(original_dim = data_sampled.shape[0], latent_dim = 256)
+    model_stage1 = NeuralDMD_Stage1(original_dim = data_sampled.shape[0], latent_dim = 256, ncoef = 0.01)
+    model_stage2 = NeuralDMD_Stage2(original_dim = data_sampled.shape[0], latent_dim = 256)
 
     print('train')
     idx, X = create_train(data_sampled)
@@ -331,10 +305,10 @@ def main():
 
     mse_dmd, K_dmd = model_dmd.train([idx, X])
 
-    best_state, K_ndmd, U_ndmd = training([model_ndmd, model_eval], data_sampled)
+    best_state, K_ndmd = training([model_stage1, model_stage2], data_sampled)
 
     print('test')
-    test_loss_ndmd, test_loss_dmd = test([model_dmd, model_eval], [K_dmd, K_ndmd], U_ndmd, best_state, data_sampled)
+    test_loss_ndmd, test_loss_dmd = test([model_dmd, model_stage2], [K_dmd, K_ndmd], best_state, data_sampled)
 
 if __name__ == "__main__":
     main()
